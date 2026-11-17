@@ -1,18 +1,59 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
 
-[ "$ACTION" = "released" ] || exit 0
-
 . /lib/functions.sh
 
 [ "$(board_name)" = "netgear,readynas-duo-v2" ] || exit 0
 
-# The power button shares its GPIO with the Ethernet PHY interrupt.
-# Require a deliberate hold to ignore short pulses from PHY resets.
-case "$SEEN" in
-	''|*[!0-9]*) exit 0 ;;
-esac
-[ "$SEEN" -ge 3 ] || exit 0
+# The shared Ethernet PHY interrupt can look like a long press at boot.
+# Only pair events observed after the late-startup service arms the button.
+state_dir=/var/run/readynas-power-button
+[ -s "$state_dir/armed" ] || exit 0
+read -r armed < "$state_dir/armed" || exit 0
+read -r uptime idle < /proc/uptime || exit 0
+uptime=${uptime%%.*}
 
-logger -t power-button "Power button held for ${SEEN}s; shutting down"
-exec /sbin/poweroff
+button_inhibited() {
+	local until
+	[ -s "$state_dir/inhibit" ] || return 1
+	read -r until < "$state_dir/inhibit" || return 0
+	case "$until" in
+		''|*[!0-9]*) return 0 ;;
+	esac
+	[ "$uptime" -lt "$until" ]
+}
+
+if button_inhibited; then
+	rm -f "$state_dir/pressed"
+	exit 0
+fi
+
+case "$ACTION" in
+pressed)
+	umask 077
+	rm -f "$state_dir/pressed" || exit 1
+	printf '%s %s\n' "$armed" "$uptime" > "$state_dir/pressed" || exit 1
+	;;
+released)
+	[ -s "$state_dir/pressed" ] || exit 0
+	read -r press_armed pressed_at < "$state_dir/pressed" || exit 0
+	rm -f "$state_dir/pressed" || exit 1
+	[ "$press_armed" = "$armed" ] || exit 0
+	case "$SEEN:$pressed_at:$uptime" in
+		*[!0-9:]*|:*|*::*|*:) exit 0 ;;
+	esac
+	[ "$SEEN" -ge 3 ] || exit 0
+	[ "$((uptime - pressed_at))" -ge 3 ] || exit 0
+
+	# A stop/restart must invalidate any in-flight press/release pair.
+	[ -s "$state_dir/armed" ] || exit 0
+	read -r current_armed < "$state_dir/armed" || exit 0
+	[ "$current_armed" = "$armed" ] || exit 0
+	button_inhibited && exit 0
+
+	logger -t power-button "Power button held for ${SEEN}s; shutting down"
+	exec /sbin/poweroff
+	;;
+esac
+
+exit 0

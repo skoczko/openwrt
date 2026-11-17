@@ -1,0 +1,28 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=99
+STOP=01
+
+start() {
+	[ "$(board_name)" = "netgear,readynas-duo-v2" ] || return 0
+
+	local state_dir=/var/run/readynas-power-button
+	local uptime idle
+
+	umask 077
+	mkdir -p "$state_dir" || return 1
+	rm -f "$state_dir/armed" "$state_dir/pressed" "$state_dir/inhibit" || return 1
+	read -r uptime idle < /proc/uptime || return 1
+	printf '%s\n' "$uptime" > "$state_dir/armed" || return 1
+	logger -t power-button "Armed at uptime=$uptime"
+}
+
+stop() {
+	[ "$(board_name)" = "netgear,readynas-duo-v2" ] || return 0
+
+	rm -f /var/run/readynas-power-button/armed \
+		/var/run/readynas-power-button/pressed \
+		/var/run/readynas-power-button/inhibit || return 1
+	logger -t power-button "Disarmed"
+}

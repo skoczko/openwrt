@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+[ "$INTERFACE" = "lan" ] || exit 0
+case "$ACTION" in
+	ifup|ifdown) ;;
+	*) exit 0 ;;
+esac
+
+. /lib/functions.sh
+[ "$(board_name)" = "netgear,readynas-duo-v2" ] || exit 0
+
+state_dir=/var/run/readynas-power-button
+[ -s "$state_dir/armed" ] || exit 0
+
+# A PHY reset can assert the shared button GPIO for several seconds.
+# Drop pending presses and require a fresh press after the link settles.
+read -r uptime idle < /proc/uptime || exit 0
+umask 077
+printf '%s\n' "$(( ${uptime%%.*} + 10 ))" > "$state_dir/inhibit" || exit 1
+rm -f "$state_dir/pressed" || exit 1
+logger -t power-button "Ignoring button events for 10s after LAN $ACTION"
